@@ -50,7 +50,7 @@ class InfluxDBManager:
             for data_point in data_points:
                 point = Point(data_point["measurement"]) \
                     .time(data_point["time"]) \
-                    .tag("market", data_point["tags"]["market"])
+                    .tag("market", data_point["tags"][" market"])
 
                 for field_name, field_value in data_point["fields"].items():
                     if isinstance(field_value, (int, float)):

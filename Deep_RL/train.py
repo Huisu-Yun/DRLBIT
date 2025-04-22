@@ -2,18 +2,17 @@ import os
 import torch
 import numpy as np
 from datetime import datetime, timedelta
-from data_preprocessor import DataPreprocessor
-from trading_env import TradingEnv
-from dqn_model import DQNAgent
 import logging
 import sys
 from pathlib import Path
-import time
-from datetime import datetime, timezone
 
-# Add the parent directory to the Python path
-sys.path.append(str(Path(__file__).parent.parent))
-from influx_client import InfluxDBManager
+from data_preprocessor import DataPreprocessor
+from trading_env import TradingEnv
+from dqn_model import DQNAgent
+from config import INFLUXDB_URL, INFLUXDB_TOKEN, INFLUXDB_ORG, INFLUXDB_BUCKET, DQN_CONFIG
+from influxdb_client import InfluxDBClient
+
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 # Configure logging
 logging.basicConfig(
@@ -22,122 +21,84 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-def train_model(
-    market: str,
-    start_date: datetime,
-    end_date: datetime,
-    initial_balance: float = 10000.0,
-    num_episodes: int = 1000,
-    batch_size: int = 32,
-    target_update: int = 10,
-    save_interval: int = 100
-):
-    # Initialize InfluxDB client
+def train_agent(market: str, preprocessor: DataPreprocessor):
     try:
-        influx_client = InfluxDBManager()
-        logger.info("Successfully connected to InfluxDB")
-    except Exception as e:
-        logger.error(f"Failed to connect to InfluxDB: {str(e)}")
-        return
-        
-    try:
-        # Initialize data preprocessor
-        preprocessor = DataPreprocessor(
-            client=influx_client.client,
-            bucket=influx_client.bucket,
-            org=influx_client.org
-        )
-        
-        # Prepare training data
-        logger.info(f"Preparing training data for market: {market} {start_date} {end_date}")
-        X, y = preprocessor.prepare_training_data(market, start_date, end_date)
 
-
-
-
-
+        # Get training data
+        end_time = datetime.now()
+        start_time = end_time - timedelta(days=30)  # Get 30 days of data
+        X, _ = preprocessor.prepare_training_data(market, start_time, end_time)
         
         if len(X) == 0:
-            logger.error("No data available for training")
+            logger.error("No training data available")
             return
             
-        return
-        # Initialize environment and agent
-        env = TradingEnv(X, initial_balance)
-        state_size = X.shape[1]
-        action_size = env.action_space.n
-        agent = DQNAgent(state_size, action_size)
+        # Create environment
+        env = TradingEnv(data=X, initial_balance=10000.0)
         
-        # Create models directory if it doesn't exist
-        os.makedirs('models', exist_ok=True)
+        # Initialize agent
+        state_dim = env.observation_space.shape[1]  # Features per timestep
+        action_dim = env.action_space.n  # Number of discrete actions
+        agent = DQNAgent(state_dim, action_dim, DQN_CONFIG)
         
         # Training loop
         best_reward = float('-inf')
-        start_time = time.time()
         
-        for episode in range(num_episodes):
-            episode_start_time = time.time()
+        for episode in range(DQN_CONFIG['episodes']):
             state = env.reset()
-            total_reward = 0
-            done = False
+            episode_reward = 0
             
-            while not done:
-                action = agent.act(state)
-                next_state, reward, done, _ = env.step(action)
+            for step in range(DQN_CONFIG['max_steps']):
+                # Select and perform action
+                action = agent.select_action(state)
+                next_state, reward, done, info = env.step(action)
                 
-                agent.memory.push(state, action, reward, next_state, done)
-                agent.train(batch_size)
+                # Store transition and train
+                agent.store_transition(state, action, reward, next_state, done)
+                agent.update_model()
                 
                 state = next_state
-                total_reward += reward
+                episode_reward += reward
                 
-            if episode % target_update == 0:
-                agent.update_target_network()
-                
+                if done:
+                    break
+            
+            # Log progress
+            logger.info(f"Episode {episode}: Reward = {episode_reward:.2f}, "
+                       f"Portfolio Value = {info['portfolio_value']:.2f}, "
+                       f"Trades = {info['trade_count']}")
+            
             # Save best model
-            if total_reward > best_reward:
-                best_reward = total_reward
-                agent.save_model(f'models/best_model_{market}.pth')
-                
-            # Save model at intervals
-            if episode % save_interval == 0:
-                agent.save_model(f'models/checkpoint_{market}_episode_{episode}.pth')
-                
-            # Log training progress
-            episode_time = time.time() - episode_start_time
-            logger.info(
-                f'Episode: {episode}, '
-                f'Total Reward: {total_reward:.2f}, '
-                f'Epsilon: {agent.epsilon:.2f}, '
-                f'Time: {episode_time:.2f}s'
-            )
+            if episode_reward > best_reward:
+                best_reward = episode_reward
+                model_path = model_dir / f"best_model_{market}.pth"
+                agent.save_model(str(model_path))
             
-        total_time = time.time() - start_time
-        logger.info(f"Training completed in {total_time:.2f} seconds")
-            
+            # Regular checkpointing
+            if episode % DQN_CONFIG['save_frequency'] == 0:
+                checkpoint_path = model_dir / f"checkpoint_{market}_episode_{episode}.pth"
+                agent.save_model(str(checkpoint_path))
+                
     except Exception as e:
         logger.error(f"Error during training: {str(e)}")
-    finally:
-        influx_client.close()
-        logger.info("Training completed and InfluxDB connection closed")
-    
-if __name__ == '__main__':
-    # Example usage
-    market = 'KRW-XRP'
-    # Use historical data from the past 30 days
-    end_date = datetime.now(timezone.utc)
-    start_date = end_date - timedelta(days=30)
-    
+        raise
+
+if __name__ == "__main__":
     # Check if CUDA is available
     if torch.cuda.is_available():
         logger.info(f"CUDA is available. Using GPU: {torch.cuda.get_device_name(0)}")
     else:
         logger.info("CUDA is not available. Using CPU")
     
-    train_model(
-        market=market,
-        start_date=start_date,
-        end_date=end_date,
-        num_episodes=1000,
-        batch_size=32
-    ) 
+    # Initialize InfluxDB client and preprocessor
+    client = InfluxDBClient(
+        url=INFLUXDB_URL,
+        token=INFLUXDB_TOKEN,
+        org=INFLUXDB_ORG
+    )
+    
+    preprocessor = DataPreprocessor(client, INFLUXDB_BUCKET, INFLUXDB_ORG)
+    
+    # Train for specific market
+    market = "KRW-BTC"  # Bitcoin market
+    train_agent(market, preprocessor) 

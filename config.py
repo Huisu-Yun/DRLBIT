@@ -18,7 +18,7 @@ UPBIT_SECRET_KEY = os.getenv("UPBIT_SECRET_KEY")
 INFLUXDB_URL = os.getenv("INFLUXDB_URL", "http://localhost:8086")
 INFLUXDB_TOKEN = os.getenv("INFLUXDB_TOKEN")
 INFLUXDB_ORG = os.getenv("INFLUXDB_ORG", "upbit_org")
-INFLUXDB_BUCKET = os.getenv("INFLUXDB_BUCKET", "upbit_data")
+INFLUXDB_BUCKET = os.getenv("INFLUXDB_BUCKET", "upbit_bucket")
 
 # Market Configuration
 DEFAULT_MARKETS = ["KRW-BTC", "KRW-ETH", "KRW-XRP", "KRW-USDT", "KRW-USDC", "KRW-SOL", "KRW-USDC", "KRW-DOGE", "KRW-TRX", "KRW-ADA", "KRW-SUI", "KRW-LINK", "KRW-AVAX"]
